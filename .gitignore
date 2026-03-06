@@ -1,0 +1,19 @@
+# Dependencies
+lib/
+node_modules/
+
+# Build
+cache/
+out/
+
+# Broadcast (deployment transactions)
+broadcast/
+
+# Environment
+.env
+
+# Logs
+*.log
+
+# Dev files
+deployments-dev.json

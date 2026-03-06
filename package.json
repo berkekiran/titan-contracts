@@ -1,0 +1,26 @@
+{
+  "name": "titan-contracts",
+  "version": "1.0.0",
+  "description": "Smart contracts for Titan - a DeFi super app on Base Sepolia testnet.",
+  "main": "index.js",
+  "directories": {
+    "lib": "lib",
+    "test": "test"
+  },
+  "scripts": {
+    "lint": "solhint 'src/**/*.sol'",
+    "lint:fix": "solhint 'src/**/*.sol' --fix",
+    "format": "prettier --write 'src/**/*.sol' 'test/**/*.sol' 'script/**/*.sol'",
+    "build": "forge build",
+    "test": "forge test",
+    "coverage": "forge coverage"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "devDependencies": {
+    "prettier": "^3.8.1",
+    "prettier-plugin-solidity": "^2.2.1",
+    "solhint": "^6.0.3"
+  }
+}
