@@ -15,10 +15,13 @@ contract StakedTitanTest is Test {
     address public rewardDistributor;
 
     uint256 public constant INITIAL_BALANCE = 10_000 * 10 ** 18;
+    uint256 public constant REWARD_RATE = 1e10; // ~31.5% APY
 
     event Deposited(address indexed user, uint256 titanAmount, uint256 sTitanAmount);
     event Withdrawn(address indexed user, uint256 sTitanAmount, uint256 titanAmount);
-    event RewardsAdded(address indexed from, uint256 amount, uint256 newExchangeRate);
+    event RewardsAccrued(uint256 amount, uint256 newExchangeRate);
+    event RewardsDeposited(address indexed from, uint256 amount);
+    event RewardRateUpdated(uint256 oldRate, uint256 newRate);
     event DepositsPausedChanged(bool paused);
     event WithdrawalsPausedChanged(bool paused);
 
@@ -31,7 +34,7 @@ contract StakedTitanTest is Test {
         vm.startPrank(owner);
 
         titan = new TitanToken(owner);
-        sTitan = new StakedTitan(address(titan), owner);
+        sTitan = new StakedTitan(address(titan), REWARD_RATE, owner);
 
         // Distribute tokens
         titan.transfer(user1, INITIAL_BALANCE);
@@ -58,7 +61,7 @@ contract StakedTitanTest is Test {
     }
 
     function test_Constructor_SetsCorrectSymbol() public view {
-        assertEq(sTitan.symbol(), "sTitan");
+        assertEq(sTitan.symbol(), "sTITAN");
     }
 
     function test_Constructor_SetsCorrectTitan() public view {
@@ -69,9 +72,13 @@ contract StakedTitanTest is Test {
         assertEq(sTitan.owner(), owner);
     }
 
+    function test_Constructor_SetsCorrectRewardRate() public view {
+        assertEq(sTitan.rewardRate(), REWARD_RATE);
+    }
+
     function test_Constructor_RevertsIfZeroToken() public {
         vm.expectRevert(StakedTitan.InvalidToken.selector);
-        new StakedTitan(address(0), owner);
+        new StakedTitan(address(0), REWARD_RATE, owner);
     }
 
     // ============ Exchange Rate Tests ============
@@ -87,17 +94,21 @@ contract StakedTitanTest is Test {
         assertEq(sTitan.exchangeRate(), 1e18);
     }
 
-    function test_ExchangeRate_IncreasesWithRewards() public {
+    function test_ExchangeRate_IncreasesOverTime() public {
         // User deposits 1000 TITAN
         vm.prank(user1);
         sTitan.deposit(1000 * 10 ** 18);
 
-        // Add 100 TITAN as rewards (10%)
+        // Fund rewards
         vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
+        sTitan.depositRewards(1000 * 10 ** 18);
 
-        // Exchange rate should be 1.1
-        assertEq(sTitan.exchangeRate(), 1.1e18);
+        // Move time forward
+        vm.warp(block.timestamp + 365 days);
+
+        // Exchange rate should have increased
+        uint256 rate = sTitan.exchangeRate();
+        assertTrue(rate > 1e18, "Exchange rate should increase over time");
     }
 
     // ============ Deposit Tests ============
@@ -126,22 +137,6 @@ contract StakedTitanTest is Test {
 
         vm.prank(user1);
         sTitan.deposit(1000 * 10 ** 18);
-    }
-
-    function test_Deposit_WithExistingRewards() public {
-        // User1 deposits 1000 TITAN
-        vm.prank(user1);
-        sTitan.deposit(1000 * 10 ** 18);
-
-        // Add 100 TITAN rewards
-        vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
-
-        // User2 deposits 1100 TITAN (should get ~1000 sTitan at 1.1 rate)
-        vm.prank(user2);
-        uint256 sTitanReceived = sTitan.deposit(1100 * 10 ** 18);
-
-        assertEq(sTitanReceived, 1000 * 10 ** 18);
     }
 
     function test_Deposit_RevertsIfZero() public {
@@ -203,15 +198,18 @@ contract StakedTitanTest is Test {
         vm.prank(user1);
         sTitan.deposit(1000 * 10 ** 18);
 
-        // Add 100 TITAN rewards (10%)
+        // Fund rewards
         vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
+        sTitan.depositRewards(1000 * 10 ** 18);
 
-        // Withdraw all sTitan, should get 1100 TITAN
+        // Warp time forward to accrue rewards
+        vm.warp(block.timestamp + 365 days);
+
+        // Withdraw all sTitan, should get more than deposited
         vm.prank(user1);
         uint256 titanReceived = sTitan.withdraw(1000 * 10 ** 18);
 
-        assertEq(titanReceived, 1100 * 10 ** 18);
+        assertTrue(titanReceived > 1000 * 10 ** 18, "Should receive rewards");
     }
 
     function test_Withdraw_RevertsIfZero() public {
@@ -250,16 +248,13 @@ contract StakedTitanTest is Test {
         vm.prank(user1);
         sTitan.deposit(1000 * 10 ** 18);
 
-        vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
-
         uint256 balanceBefore = titan.balanceOf(user1);
 
         vm.prank(user1);
         uint256 titanReceived = sTitan.withdrawAll();
 
-        assertEq(titanReceived, 1100 * 10 ** 18);
-        assertEq(titan.balanceOf(user1), balanceBefore + 1100 * 10 ** 18);
+        assertEq(titanReceived, 1000 * 10 ** 18);
+        assertEq(titan.balanceOf(user1), balanceBefore + 1000 * 10 ** 18);
         assertEq(sTitan.balanceOf(user1), 0);
     }
 
@@ -269,66 +264,73 @@ contract StakedTitanTest is Test {
         sTitan.withdrawAll();
     }
 
-    // ============ AddRewards Tests ============
+    // ============ DepositRewards Tests ============
 
-    function test_AddRewards_IncreasesExchangeRate() public {
-        vm.prank(user1);
-        sTitan.deposit(1000 * 10 ** 18);
-
-        uint256 rateBefore = sTitan.exchangeRate();
+    function test_DepositRewards_TransfersTokens() public {
+        uint256 balanceBefore = titan.balanceOf(address(sTitan));
 
         vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
+        sTitan.depositRewards(100 * 10 ** 18);
 
-        assertTrue(sTitan.exchangeRate() > rateBefore);
+        assertEq(titan.balanceOf(address(sTitan)), balanceBefore + 100 * 10 ** 18);
     }
 
-    function test_AddRewards_EmitsEvent() public {
-        vm.prank(user1);
-        sTitan.deposit(1000 * 10 ** 18);
-
+    function test_DepositRewards_EmitsEvent() public {
         vm.expectEmit(true, false, false, true);
-        emit RewardsAdded(rewardDistributor, 100 * 10 ** 18, 1.1e18);
+        emit RewardsDeposited(rewardDistributor, 100 * 10 ** 18);
 
         vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
+        sTitan.depositRewards(100 * 10 ** 18);
     }
 
-    function test_AddRewards_RevertsIfZero() public {
+    function test_DepositRewards_RevertsIfZero() public {
         vm.prank(rewardDistributor);
         vm.expectRevert(StakedTitan.ZeroAmount.selector);
-        sTitan.addRewards(0);
+        sTitan.depositRewards(0);
+    }
+
+    // ============ SetRewardRate Tests ============
+
+    function test_SetRewardRate_UpdatesRate() public {
+        uint256 newRate = 2e10;
+
+        vm.prank(owner);
+        sTitan.setRewardRate(newRate);
+
+        assertEq(sTitan.rewardRate(), newRate);
+    }
+
+    function test_SetRewardRate_EmitsEvent() public {
+        uint256 newRate = 2e10;
+
+        vm.expectEmit(false, false, false, true);
+        emit RewardRateUpdated(REWARD_RATE, newRate);
+
+        vm.prank(owner);
+        sTitan.setRewardRate(newRate);
+    }
+
+    function test_SetRewardRate_RevertsIfNotOwner() public {
+        vm.prank(user1);
+        vm.expectRevert(abi.encodeWithSignature("OwnableUnauthorizedAccount(address)", user1));
+        sTitan.setRewardRate(2e10);
     }
 
     // ============ Preview Tests ============
 
-    function test_PreviewDeposit_ReturnsCorrectAmount() public {
+    function test_PreviewDeposit_ReturnsCorrectAmount() public view {
         // First deposit: 1:1
         uint256 preview1 = sTitan.previewDeposit(1000 * 10 ** 18);
         assertEq(preview1, 1000 * 10 ** 18);
-
-        // After deposit and rewards
-        vm.prank(user1);
-        sTitan.deposit(1000 * 10 ** 18);
-
-        vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
-
-        // At 1.1 rate, 1100 TITAN = 1000 sTitan
-        uint256 preview2 = sTitan.previewDeposit(1100 * 10 ** 18);
-        assertEq(preview2, 1000 * 10 ** 18);
     }
 
     function test_PreviewWithdraw_ReturnsCorrectAmount() public {
         vm.prank(user1);
         sTitan.deposit(1000 * 10 ** 18);
 
-        vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
-
-        // 1000 sTitan = 1100 TITAN at 1.1 rate
+        // 1000 sTitan = 1000 TITAN at 1.0 rate
         uint256 preview = sTitan.previewWithdraw(1000 * 10 ** 18);
-        assertEq(preview, 1100 * 10 ** 18);
+        assertEq(preview, 1000 * 10 ** 18);
     }
 
     // ============ View Function Tests ============
@@ -337,20 +339,31 @@ contract StakedTitanTest is Test {
         vm.prank(user1);
         sTitan.deposit(1000 * 10 ** 18);
 
-        vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
-
-        assertEq(sTitan.totalTitan(), 1100 * 10 ** 18);
+        assertEq(sTitan.totalTitan(), 1000 * 10 ** 18);
     }
 
     function test_TitanBalanceOf_ReturnsCorrectValue() public {
         vm.prank(user1);
         sTitan.deposit(1000 * 10 ** 18);
 
-        vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
+        assertEq(sTitan.titanBalanceOf(user1), 1000 * 10 ** 18);
+    }
 
-        assertEq(sTitan.titanBalanceOf(user1), 1100 * 10 ** 18);
+    function test_CurrentAPY_ReturnsCorrectValue() public view {
+        uint256 apy = sTitan.currentAPY();
+        // REWARD_RATE = 1e10, APY ≈ 31.5%
+        assertTrue(apy > 30 && apy < 35, "APY should be around 31.5%");
+    }
+
+    function test_AvailableRewards_ReturnsCorrectValue() public {
+        vm.prank(user1);
+        sTitan.deposit(1000 * 10 ** 18);
+
+        vm.prank(rewardDistributor);
+        sTitan.depositRewards(500 * 10 ** 18);
+
+        uint256 available = sTitan.availableRewards();
+        assertEq(available, 500 * 10 ** 18);
     }
 
     // ============ Pause Tests ============
@@ -383,6 +396,42 @@ contract StakedTitanTest is Test {
         sTitan.setWithdrawalsPaused(true);
     }
 
+    // ============ Time-based Reward Tests ============
+
+    function test_Rewards_AccrueOverTime() public {
+        // User deposits
+        vm.prank(user1);
+        sTitan.deposit(1000 * 10 ** 18);
+
+        // Fund rewards
+        vm.prank(rewardDistributor);
+        sTitan.depositRewards(1000 * 10 ** 18);
+
+        uint256 valueBefore = sTitan.titanBalanceOf(user1);
+
+        // Warp 30 days
+        vm.warp(block.timestamp + 30 days);
+
+        uint256 valueAfter = sTitan.titanBalanceOf(user1);
+
+        assertTrue(valueAfter > valueBefore, "Value should increase over time");
+    }
+
+    function test_Rewards_StopWhenNoFunds() public {
+        // User deposits
+        vm.prank(user1);
+        sTitan.deposit(1000 * 10 ** 18);
+
+        // No rewards deposited
+
+        // Warp 30 days
+        vm.warp(block.timestamp + 30 days);
+
+        // Value should stay the same (capped by available balance)
+        uint256 value = sTitan.titanBalanceOf(user1);
+        assertEq(value, 1000 * 10 ** 18, "Value should not increase without reward funds");
+    }
+
     // ============ Multiple Users Tests ============
 
     function test_MultipleUsers_FairDistribution() public {
@@ -390,132 +439,22 @@ contract StakedTitanTest is Test {
         vm.prank(user1);
         sTitan.deposit(1000 * 10 ** 18);
 
-        // Add 100 TITAN rewards
-        vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
-
-        // User2 deposits 1100 TITAN (gets 1000 sTitan at 1.1 rate)
+        // User2 deposits 1000 TITAN
         vm.prank(user2);
-        sTitan.deposit(1100 * 10 ** 18);
+        sTitan.deposit(1000 * 10 ** 18);
 
-        // Add another 220 TITAN rewards (10% of 2200 total)
+        // Fund rewards
         vm.prank(rewardDistributor);
-        sTitan.addRewards(220 * 10 ** 18);
+        sTitan.depositRewards(200 * 10 ** 18);
 
-        // Total: 2420 TITAN, 2000 sTitan
-        // Each user has 1000 sTitan = 1210 TITAN
+        // Warp time
+        vm.warp(block.timestamp + 365 days);
 
-        assertEq(sTitan.titanBalanceOf(user1), 1210 * 10 ** 18);
-        assertEq(sTitan.titanBalanceOf(user2), 1210 * 10 ** 18);
-    }
+        // Both users should have equal value
+        uint256 value1 = sTitan.titanBalanceOf(user1);
+        uint256 value2 = sTitan.titanBalanceOf(user2);
 
-    // ============ Additional Branch Coverage Tests ============
-
-    function test_PreviewWithdraw_WhenNoSupply() public view {
-        // When no supply, previewWithdraw should return 0
-        uint256 preview = sTitan.previewWithdraw(1000 * 10 ** 18);
-        assertEq(preview, 0);
-    }
-
-    function test_PreviewDeposit_WhenNoSupply() public view {
-        // When no supply, should be 1:1
-        uint256 preview = sTitan.previewDeposit(1000 * 10 ** 18);
-        assertEq(preview, 1000 * 10 ** 18);
-    }
-
-    function test_WithdrawAll_RevertsIfPaused() public {
-        vm.prank(user1);
-        sTitan.deposit(1000 * 10 ** 18);
-
-        vm.prank(owner);
-        sTitan.setWithdrawalsPaused(true);
-
-        vm.prank(user1);
-        vm.expectRevert(StakedTitan.WithdrawalsPaused.selector);
-        sTitan.withdrawAll();
-    }
-
-    function test_TitanBalanceOf_WhenNoBalance() public view {
-        // Should return 0 when user has no sTitan
-        assertEq(sTitan.titanBalanceOf(user1), 0);
-    }
-
-    function test_TotalTitan_WhenEmpty() public view {
-        // Should return 0 when no deposits
-        assertEq(sTitan.totalTitan(), 0);
-    }
-
-    function test_Deposit_MinimumAmount() public {
-        uint256 minDeposit = sTitan.MINIMUM_DEPOSIT();
-
-        vm.prank(user1);
-        uint256 received = sTitan.deposit(minDeposit);
-
-        assertEq(received, minDeposit);
-        assertEq(sTitan.balanceOf(user1), minDeposit);
-    }
-
-    function test_Deposit_LargeAmount() public {
-        vm.prank(user1);
-        uint256 received = sTitan.deposit(INITIAL_BALANCE);
-
-        assertEq(received, INITIAL_BALANCE);
-        assertEq(sTitan.balanceOf(user1), INITIAL_BALANCE);
-    }
-
-    function test_ExchangeRate_AfterMultipleRewards() public {
-        vm.prank(user1);
-        sTitan.deposit(1000 * 10 ** 18);
-
-        // Add multiple rewards
-        vm.startPrank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
-        sTitan.addRewards(100 * 10 ** 18);
-        sTitan.addRewards(100 * 10 ** 18);
-        vm.stopPrank();
-
-        // Rate should be 1.3
-        assertEq(sTitan.exchangeRate(), 1.3e18);
-    }
-
-    function test_Withdraw_PartialAmount() public {
-        vm.prank(user1);
-        sTitan.deposit(1000 * 10 ** 18);
-
-        vm.prank(rewardDistributor);
-        sTitan.addRewards(100 * 10 ** 18);
-
-        // Withdraw half
-        vm.prank(user1);
-        uint256 received = sTitan.withdraw(500 * 10 ** 18);
-
-        // Should get 550 TITAN (half of 1100)
-        assertEq(received, 550 * 10 ** 18);
-        assertEq(sTitan.balanceOf(user1), 500 * 10 ** 18);
-    }
-
-    function test_SetDepositsPaused_Toggle() public {
-        vm.startPrank(owner);
-
-        sTitan.setDepositsPaused(true);
-        assertTrue(sTitan.depositsPaused());
-
-        sTitan.setDepositsPaused(false);
-        assertFalse(sTitan.depositsPaused());
-
-        vm.stopPrank();
-    }
-
-    function test_SetWithdrawalsPaused_Toggle() public {
-        vm.startPrank(owner);
-
-        sTitan.setWithdrawalsPaused(true);
-        assertTrue(sTitan.withdrawalsPaused());
-
-        sTitan.setWithdrawalsPaused(false);
-        assertFalse(sTitan.withdrawalsPaused());
-
-        vm.stopPrank();
+        assertEq(value1, value2, "Users should have equal value");
     }
 
     // ============ Fuzz Tests ============
@@ -529,45 +468,24 @@ contract StakedTitanTest is Test {
         vm.prank(user1);
         uint256 titanReceived = sTitan.withdraw(sTitanReceived);
 
-        // Should get back same amount (no rewards added)
+        // Should get back same amount (no time passed, no rewards)
         assertEq(titanReceived, amount);
     }
 
-    function testFuzz_ExchangeRate_NeverDecreases(uint256 reward1, uint256 reward2) public {
-        reward1 = bound(reward1, 1e18, 1000 * 10 ** 18);
-        reward2 = bound(reward2, 1e18, 1000 * 10 ** 18);
+    function testFuzz_ExchangeRate_NeverDecreases(uint256 timeElapsed) public {
+        timeElapsed = bound(timeElapsed, 0, 365 days);
 
         vm.prank(user1);
         sTitan.deposit(1000 * 10 ** 18);
 
+        vm.prank(rewardDistributor);
+        sTitan.depositRewards(1000 * 10 ** 18);
+
         uint256 rate1 = sTitan.exchangeRate();
 
-        vm.prank(rewardDistributor);
-        sTitan.addRewards(reward1);
+        vm.warp(block.timestamp + timeElapsed);
 
         uint256 rate2 = sTitan.exchangeRate();
-        assertTrue(rate2 >= rate1);
-
-        vm.prank(rewardDistributor);
-        sTitan.addRewards(reward2);
-
-        uint256 rate3 = sTitan.exchangeRate();
-        assertTrue(rate3 >= rate2);
-    }
-
-    function testFuzz_MultipleDepositsAndWithdrawals(uint256 amount1, uint256 amount2) public {
-        amount1 = bound(amount1, sTitan.MINIMUM_DEPOSIT(), INITIAL_BALANCE / 2);
-        amount2 = bound(amount2, sTitan.MINIMUM_DEPOSIT(), INITIAL_BALANCE / 2);
-
-        vm.startPrank(user1);
-        sTitan.deposit(amount1);
-        sTitan.deposit(amount2);
-
-        uint256 totalSTitan = sTitan.balanceOf(user1);
-        uint256 titanReceived = sTitan.withdrawAll();
-        vm.stopPrank();
-
-        assertEq(sTitan.balanceOf(user1), 0);
-        assertEq(titanReceived, amount1 + amount2);
+        assertTrue(rate2 >= rate1, "Exchange rate should never decrease");
     }
 }

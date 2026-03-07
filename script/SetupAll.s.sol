@@ -17,7 +17,7 @@ import "../src/SwapRouter.sol";
 import "../src/StakedTitan.sol";
 import "../src/LiquidityRouter.sol";
 
-interface IPositionManager {
+interface IPositionManagerScript {
     function initializePool(
         IPoolManager.PoolKey calldata key,
         uint160 sqrtPriceX96
@@ -57,6 +57,7 @@ contract SetupAll is Script {
     // ============ Configuration ============
     uint256 public constant STAKING_REWARD_RATE = 1e15;
     uint256 public constant FARM_TITAN_PER_SECOND = 1e18;
+    uint256 public constant STITAN_REWARD_RATE = 1e10; // ~31.5% APY
     uint256 public constant PROPOSAL_THRESHOLD = 1_000 * 1e18;
     uint256 public constant VOTING_DELAY = 1; // 1 block delay
     uint256 public constant VOTING_PERIOD = 50400; // ~1 week in blocks
@@ -137,7 +138,7 @@ contract SetupAll is Script {
         earn = new Earn(address(titanToken), STAKING_REWARD_RATE, deployer);
         console.log("Earn:", address(earn));
 
-        sTitan = new StakedTitan(address(titanToken), deployer);
+        sTitan = new StakedTitan(address(titanToken), STITAN_REWARD_RATE, deployer);
         console.log("StakedTitan:", address(sTitan));
 
         farm = new Farm(address(titanToken), FARM_TITAN_PER_SECOND, deployer);
@@ -159,7 +160,7 @@ contract SetupAll is Script {
         swapRouter = new SwapRouter(POOL_MANAGER, deployer);
         console.log("SwapRouter:", address(swapRouter));
 
-        liquidityRouter = new LiquidityRouter(POOL_MANAGER, deployer);
+        liquidityRouter = new LiquidityRouter(POOL_MANAGER, STATE_VIEW, deployer);
         console.log("LiquidityRouter:", address(liquidityRouter));
     }
 

@@ -44,7 +44,7 @@ contract TestStakedTitan is Script {
         console.log("--- Basic Properties ---");
 
         if (keccak256(bytes(sTitan.name())) == keccak256("Staked Titan")) _p("name()"); else _f("name()");
-        if (keccak256(bytes(sTitan.symbol())) == keccak256("sTitan")) _p("symbol()"); else _f("symbol()");
+        if (keccak256(bytes(sTitan.symbol())) == keccak256("sTITAN")) _p("symbol()"); else _f("symbol()");
         if (address(sTitan.titan()) == address(token)) _p("titan()"); else _f("titan()");
         if (sTitan.MINIMUM_DEPOSIT() == 1e15) _p("MINIMUM_DEPOSIT"); else _f("MINIMUM_DEPOSIT");
 
@@ -192,8 +192,8 @@ contract TestStakedTitan is Script {
         vm.broadcast(pk);
         token.approve(address(sTitan), 1000 * 1e18);
         vm.broadcast(pk);
-        sTitan.addRewards(1000 * 1e18);
-        _p("addRewards(1000 TITAN)");
+        sTitan.depositRewards(1000 * 1e18);
+        _p("depositRewards(1000 TITAN)");
 
         uint256 rateAfter = sTitan.exchangeRate();
         console.log("   Rate after rewards:", rateAfter * 100 / 1e18, "%");
@@ -205,12 +205,12 @@ contract TestStakedTitan is Script {
         uint256 withdrawable = sTitan.previewWithdraw(sTitanBal);
         console.log("   Withdrawable TITAN:", withdrawable / 1e18, "(should be > deposited)");
 
-        // addRewards with 0 (should fail)
+        // depositRewards with 0 (should fail)
         vm.broadcast(pk);
-        try sTitan.addRewards(0) {
-            _f("addRewards(0) should fail");
+        try sTitan.depositRewards(0) {
+            _f("depositRewards(0) should fail");
         } catch {
-            _p("addRewards(0) reverts");
+            _p("depositRewards(0) reverts");
         }
 
         console.log("");
@@ -309,7 +309,7 @@ contract TestStakedTitan is Script {
         vm.broadcast(pk);
         token.approve(address(sTitan), 3000 * 1e18);
         vm.broadcast(pk);
-        sTitan.addRewards(3000 * 1e18);
+        sTitan.depositRewards(3000 * 1e18);
 
         // All users should benefit proportionally
         uint256 rateAfter = sTitan.exchangeRate();

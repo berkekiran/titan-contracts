@@ -73,6 +73,8 @@ contract Deploy is Script {
     uint256 public constant FAUCET_INITIAL_BALANCE = 10_000_000 * 1e18; // 10M TITAN
     uint256 public constant STAKING_REWARDS_ALLOCATION = 20_000_000 * 1e18; // 20M TITAN
     uint256 public constant FARM_REWARDS_ALLOCATION = 20_000_000 * 1e18; // 20M TITAN
+    uint256 public constant STITAN_REWARD_RATE = 1e10; // ~31.5% APY for sTitan
+    uint256 public constant STITAN_INITIAL_REWARDS = 5_000_000 * 1e18; // 5M TITAN for sTitan rewards
 
     // Uniswap V4 on Sepolia
     address public constant POOL_MANAGER = 0xE03A1074c86CFeDd5C142C4F04F1a1536e203543;
@@ -121,7 +123,7 @@ contract Deploy is Script {
         console.log("Governor deployed at:", address(governor));
 
         // 5. Deploy StakedTitan (sTitan)
-        sTitan = new StakedTitan(address(titanToken), deployer);
+        sTitan = new StakedTitan(address(titanToken), STITAN_REWARD_RATE, deployer);
         console.log("StakedTitan (sTitan) deployed at:", address(sTitan));
 
         // 6. Deploy Faucet
@@ -137,6 +139,10 @@ contract Deploy is Script {
 
         titanToken.transfer(address(faucet), FAUCET_INITIAL_BALANCE);
         console.log("Funded Faucet with:", FAUCET_INITIAL_BALANCE / 1e18, "TITAN");
+
+        titanToken.approve(address(sTitan), STITAN_INITIAL_REWARDS);
+        sTitan.depositRewards(STITAN_INITIAL_REWARDS);
+        console.log("Funded sTitan with:", STITAN_INITIAL_REWARDS / 1e18, "TITAN rewards");
 
         vm.stopBroadcast();
 
