@@ -10,7 +10,6 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 import "../src/TitanToken.sol";
 import "../src/Earn.sol";
-import "../src/Farm.sol";
 import "../src/Governor.sol";
 import "../src/Faucet.sol";
 import "../src/SwapRouter.sol";
@@ -48,7 +47,6 @@ contract SetupAll is Script {
     TitanToken public titanToken;
     Earn public earn;
     StakedTitan public sTitan;
-    Farm public farm;
     Governor public governor;
     Faucet public faucet;
     SwapRouter public swapRouter;
@@ -56,7 +54,6 @@ contract SetupAll is Script {
 
     // ============ Configuration ============
     uint256 public constant STAKING_REWARD_RATE = 1e15;
-    uint256 public constant FARM_TITAN_PER_SECOND = 1e18;
     uint256 public constant STITAN_REWARD_RATE = 1e10; // ~31.5% APY
     uint256 public constant PROPOSAL_THRESHOLD = 1_000 * 1e18;
     uint256 public constant VOTING_DELAY = 1; // 1 block delay
@@ -69,7 +66,6 @@ contract SetupAll is Script {
     // Allocations
     uint256 public constant FAUCET_ALLOCATION = 10_000_000 * 1e18;
     uint256 public constant STAKING_ALLOCATION = 20_000_000 * 1e18;
-    uint256 public constant FARM_ALLOCATION = 20_000_000 * 1e18;
 
     // Initial liquidity
     uint256 public constant INITIAL_TITAN_LIQUIDITY = 25_000 * 1e18;
@@ -89,10 +85,8 @@ contract SetupAll is Script {
     int24 public constant TICK_SPACING = 60;
 
     // sqrtPriceX96 for 1 TITAN = 0.0001 ETH
-    // If WETH is currency0: price = TITAN/WETH = 10000, sqrt(10000) * 2^96 = 7.922...e30
-    // If TITAN is currency0: price = WETH/TITAN = 0.0001, sqrt(0.0001) * 2^96 = 7.922...e26
-    uint160 public constant SQRT_PRICE_TITAN_IS_0 = 792281625142643375935439503; // ~0.01 sqrt
-    uint160 public constant SQRT_PRICE_WETH_IS_0 = 7922816251426433759354395033600; // ~100 sqrt
+    uint160 public constant SQRT_PRICE_TITAN_IS_0 = 792281625142643375935439503;
+    uint160 public constant SQRT_PRICE_WETH_IS_0 = 7922816251426433759354395033600;
 
     function run() external {
         uint256 deployerPrivateKey = vm.envOr(
@@ -141,9 +135,6 @@ contract SetupAll is Script {
         sTitan = new StakedTitan(address(titanToken), STITAN_REWARD_RATE, deployer);
         console.log("StakedTitan:", address(sTitan));
 
-        farm = new Farm(address(titanToken), FARM_TITAN_PER_SECOND, deployer);
-        console.log("Farm:", address(farm));
-
         governor = new Governor(
             address(titanToken),
             PROPOSAL_THRESHOLD,
@@ -172,9 +163,6 @@ contract SetupAll is Script {
 
         titanToken.transfer(address(earn), STAKING_ALLOCATION);
         console.log("Earn funded:", STAKING_ALLOCATION / 1e18, "TITAN");
-
-        titanToken.transfer(address(farm), FARM_ALLOCATION);
-        console.log("Farm funded:", FARM_ALLOCATION / 1e18, "TITAN");
     }
 
     function _initializePool() internal returns (address currency0, address currency1) {
@@ -260,7 +248,6 @@ contract SetupAll is Script {
                 '    "titanToken": "', vm.toString(address(titanToken)), '",\n',
                 '    "staking": "', vm.toString(address(earn)), '",\n',
                 '    "stakedTitan": "', vm.toString(address(sTitan)), '",\n',
-                '    "farming": "', vm.toString(address(farm)), '",\n',
                 '    "governance": "', vm.toString(address(governor)), '",\n',
                 '    "faucet": "', vm.toString(address(faucet)), '",\n',
                 '    "swapRouter": "', vm.toString(address(swapRouter)), '",\n',
@@ -297,7 +284,6 @@ contract SetupAll is Script {
         console.log("TitanToken:  ", address(titanToken));
         console.log("Earn:        ", address(earn));
         console.log("StakedTitan: ", address(sTitan));
-        console.log("Farm:        ", address(farm));
         console.log("Governor:    ", address(governor));
         console.log("Faucet:      ", address(faucet));
         console.log("SwapRouter:  ", address(swapRouter));
@@ -309,7 +295,6 @@ contract SetupAll is Script {
         console.log("\n--- Balances ---");
         console.log("Faucet TITAN:", IERC20Ext(address(titanToken)).balanceOf(address(faucet)) / 1e18);
         console.log("Earn TITAN:", IERC20Ext(address(titanToken)).balanceOf(address(earn)) / 1e18);
-        console.log("Farm TITAN:", IERC20Ext(address(titanToken)).balanceOf(address(farm)) / 1e18);
         console.log("\nDeployment info written to: deployments-dev.json");
         console.log("========================================\n");
     }

@@ -7,17 +7,22 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Address.sol";
 import "./interfaces/IPoolManager.sol";
+import "./interfaces/IStateView.sol";
+import "./libraries/TickMath.sol";
+import "./libraries/LiquidityAmounts.sol";
 
 /**
  * @title LiquidityRouter
  * @author Titan Team
- * @notice Simple liquidity router for Uniswap V4 pools
- * @dev Handles pool initialization and liquidity management
+ * @notice Liquidity router for Uniswap V4 pools
+ * @dev Handles pool initialization and liquidity management via PoolManager unlock callback
+ *      Uses proper Uniswap math to calculate liquidity from token amounts
  */
 contract LiquidityRouter is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
     IPoolManager public immutable poolManager;
+    IStateView public immutable stateView;
 
     // Default initial sqrtPriceX96 for new pools (price = 1)
     uint160 internal constant DEFAULT_SQRT_PRICE_X96 = 79228162514264337593543950336;
@@ -25,6 +30,7 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
     // Action types for unlock callback
     uint8 internal constant ACTION_ADD_LIQUIDITY = 1;
     uint8 internal constant ACTION_REMOVE_LIQUIDITY = 2;
+    uint8 internal constant ACTION_COLLECT_FEES = 3;
 
     struct AddLiquidityParams {
         address token0;
@@ -35,6 +41,8 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
         int24 tickUpper;
         uint256 amount0Desired;
         uint256 amount1Desired;
+        uint256 amount0Min;
+        uint256 amount1Min;
         address recipient;
     }
 
@@ -46,6 +54,18 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
         int24 tickLower;
         int24 tickUpper;
         uint128 liquidity;
+        uint256 amount0Min;
+        uint256 amount1Min;
+        address recipient;
+    }
+
+    struct CollectFeesParams {
+        address token0;
+        address token1;
+        uint24 fee;
+        int24 tickSpacing;
+        int24 tickLower;
+        int24 tickUpper;
         address recipient;
     }
 
@@ -57,14 +77,15 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
     // User liquidity positions: user => poolId => tickLower => tickUpper => liquidity
     mapping(address => mapping(bytes32 => mapping(int24 => mapping(int24 => uint128)))) public positions;
 
-    /// @notice Error definitions
     error InvalidPoolManager();
+    error InvalidStateView();
     error InvalidAmounts();
     error OnlyPoolManager();
     error InvalidRecipient();
     error InsufficientLiquidity();
+    error SlippageExceeded();
+    error PoolNotInitialized();
 
-    /// @notice Events
     event PoolInitialized(address indexed token0, address indexed token1, uint24 fee, int24 tick);
     event LiquidityAdded(
         address indexed provider,
@@ -82,19 +103,23 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
         uint256 amount1,
         uint128 liquidity
     );
+    event FeesCollected(
+        address indexed provider,
+        address indexed token0,
+        address indexed token1,
+        uint256 amount0,
+        uint256 amount1
+    );
 
-    constructor(address _poolManager, address _owner) Ownable(_owner) {
+    constructor(address _poolManager, address _stateView, address _owner) Ownable(_owner) {
         if (_poolManager == address(0)) revert InvalidPoolManager();
+        if (_stateView == address(0)) revert InvalidStateView();
         poolManager = IPoolManager(_poolManager);
+        stateView = IStateView(_stateView);
     }
 
     /**
      * @notice Initialize a new pool if it doesn't exist
-     * @param token0 The first token (must be < token1)
-     * @param token1 The second token
-     * @param fee The pool fee
-     * @param tickSpacing The tick spacing
-     * @param sqrtPriceX96 Initial price (0 for default price = 1)
      */
     function initializePool(
         address token0,
@@ -119,16 +144,16 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
 
     /**
      * @notice Add liquidity to a pool
-     * @param params The add liquidity parameters
-     * @return liquidity The amount of liquidity added
+     * @dev Calculates optimal liquidity from desired amounts using current pool price
      */
     function addLiquidity(AddLiquidityParams calldata params)
         external
         payable
         nonReentrant
-        returns (uint128 liquidity)
+        returns (uint128 liquidity, uint256 amount0, uint256 amount1)
     {
         if (params.amount0Desired == 0 && params.amount1Desired == 0) revert InvalidAmounts();
+        if (params.recipient == address(0)) revert InvalidRecipient();
 
         // Transfer tokens from sender
         if (params.token0 != address(0) && params.amount0Desired > 0) {
@@ -146,10 +171,14 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
 
         // Execute through unlock
         bytes memory result = poolManager.unlock(data);
-        (liquidity, , ) = abi.decode(result, (uint128, uint256, uint256));
+        (liquidity, amount0, amount1) = abi.decode(result, (uint128, uint256, uint256));
 
-        // Store position AFTER external call completes (nonReentrant protects against reentrancy)
-        // Note: CEI pattern is maintained as nonReentrant modifier prevents reentry
+        // Check slippage
+        if (amount0 < params.amount0Min || amount1 < params.amount1Min) {
+            revert SlippageExceeded();
+        }
+
+        // Store position
         bytes32 poolId = _getPoolId(params.token0, params.token1, params.fee, params.tickSpacing);
         positions[params.recipient][poolId][params.tickLower][params.tickUpper] += liquidity;
 
@@ -157,23 +186,22 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
             params.recipient,
             params.token0,
             params.token1,
-            params.amount0Desired,
-            params.amount1Desired,
+            amount0,
+            amount1,
             liquidity
         );
     }
 
     /**
      * @notice Remove liquidity from a pool
-     * @param params The remove liquidity parameters
-     * @return amount0 Amount of token0 received
-     * @return amount1 Amount of token1 received
      */
     function removeLiquidity(RemoveLiquidityParams calldata params)
         external
         nonReentrant
         returns (uint256 amount0, uint256 amount1)
     {
+        if (params.recipient == address(0)) revert InvalidRecipient();
+
         bytes32 poolId = _getPoolId(params.token0, params.token1, params.fee, params.tickSpacing);
         uint128 userLiquidity = positions[msg.sender][poolId][params.tickLower][params.tickUpper];
 
@@ -192,6 +220,11 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
         bytes memory result = poolManager.unlock(data);
         (amount0, amount1) = abi.decode(result, (uint256, uint256));
 
+        // Check slippage
+        if (amount0 < params.amount0Min || amount1 < params.amount1Min) {
+            revert SlippageExceeded();
+        }
+
         emit LiquidityRemoved(
             params.recipient,
             params.token0,
@@ -199,6 +232,42 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
             amount0,
             amount1,
             params.liquidity
+        );
+    }
+
+    /**
+     * @notice Collect accumulated fees from a position
+     * @dev Calls modifyLiquidity with 0 delta to collect fees without changing position
+     */
+    function collectFees(CollectFeesParams calldata params)
+        external
+        nonReentrant
+        returns (uint256 amount0, uint256 amount1)
+    {
+        if (params.recipient == address(0)) revert InvalidRecipient();
+
+        bytes32 poolId = _getPoolId(params.token0, params.token1, params.fee, params.tickSpacing);
+        uint128 userLiquidity = positions[msg.sender][poolId][params.tickLower][params.tickUpper];
+
+        // Must have a position to collect fees
+        if (userLiquidity == 0) revert InsufficientLiquidity();
+
+        // Encode callback data
+        bytes memory data = abi.encode(CallbackData({
+            action: ACTION_COLLECT_FEES,
+            params: abi.encode(params)
+        }));
+
+        // Execute through unlock
+        bytes memory result = poolManager.unlock(data);
+        (amount0, amount1) = abi.decode(result, (uint256, uint256));
+
+        emit FeesCollected(
+            params.recipient,
+            params.token0,
+            params.token1,
+            amount0,
+            amount1
         );
     }
 
@@ -214,6 +283,8 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
             return _handleAddLiquidity(cbData.params);
         } else if (cbData.action == ACTION_REMOVE_LIQUIDITY) {
             return _handleRemoveLiquidity(cbData.params);
+        } else if (cbData.action == ACTION_COLLECT_FEES) {
+            return _handleCollectFees(cbData.params);
         }
 
         return "";
@@ -230,23 +301,25 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
             hooks: address(0)
         });
 
-        // Calculate liquidity properly:
-        // For a full range position, liquidity L relates to tokens as:
-        // L = amount0 * sqrt(P) = amount1 / sqrt(P)
-        // We need to find L such that neither amount exceeds desired
-        // Using conservative estimate: divide smaller amount by a large factor
-        // This ensures we don't request more tokens than we have
-        // The refund mechanism will return unused tokens
+        // Get current pool state
+        bytes32 poolId = _getPoolId(p.token0, p.token1, p.fee, p.tickSpacing);
+        (uint160 sqrtPriceX96, , , ) = stateView.getSlot0(poolId);
 
-        // Scale down significantly - use smaller amount / 100 as liquidity
-        // This is conservative but ensures we have enough tokens
-        uint128 liquidity;
-        if (p.amount0Desired <= p.amount1Desired) {
-            liquidity = uint128(p.amount0Desired / 100);
-        } else {
-            liquidity = uint128(p.amount1Desired / 100);
-        }
-        if (liquidity == 0) liquidity = 1e15; // Minimum liquidity
+        if (sqrtPriceX96 == 0) revert PoolNotInitialized();
+
+        // Calculate liquidity from amounts using Uniswap math
+        uint160 sqrtRatioAX96 = TickMath.getSqrtRatioAtTick(p.tickLower);
+        uint160 sqrtRatioBX96 = TickMath.getSqrtRatioAtTick(p.tickUpper);
+
+        uint128 liquidity = LiquidityAmounts.getLiquidityForAmounts(
+            sqrtPriceX96,
+            sqrtRatioAX96,
+            sqrtRatioBX96,
+            p.amount0Desired,
+            p.amount1Desired
+        );
+
+        if (liquidity == 0) revert InvalidAmounts();
 
         IPoolManager.ModifyLiquidityParams memory modifyParams = IPoolManager.ModifyLiquidityParams({
             tickLower: p.tickLower,
@@ -264,7 +337,7 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
         uint256 amount0Used = 0;
         uint256 amount1Used = 0;
 
-        // Settle token0 if we owe
+        // Settle token0 if we owe (negative delta = we owe)
         if (delta0 < 0) {
             amount0Used = uint256(int256(-delta0));
             if (p.token0 != address(0)) {
@@ -319,7 +392,7 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
 
         (int256 callerDelta, ) = poolManager.modifyLiquidity(key, modifyParams, "");
 
-        // Handle takes (we receive tokens)
+        // Handle takes (positive delta = we receive)
         int128 delta0 = int128(callerDelta >> 128);
         int128 delta1 = int128(callerDelta);
 
@@ -333,6 +406,49 @@ contract LiquidityRouter is Ownable, ReentrancyGuard {
         }
 
         // Take token1 if we receive
+        if (delta1 > 0) {
+            amount1 = uint256(int256(delta1));
+            poolManager.take(p.token1, p.recipient, amount1);
+        }
+
+        return abi.encode(amount0, amount1);
+    }
+
+    function _handleCollectFees(bytes memory params) internal returns (bytes memory) {
+        CollectFeesParams memory p = abi.decode(params, (CollectFeesParams));
+
+        IPoolManager.PoolKey memory key = IPoolManager.PoolKey({
+            currency0: p.token0,
+            currency1: p.token1,
+            fee: p.fee,
+            tickSpacing: p.tickSpacing,
+            hooks: address(0)
+        });
+
+        // Call modifyLiquidity with 0 delta to collect fees
+        IPoolManager.ModifyLiquidityParams memory modifyParams = IPoolManager.ModifyLiquidityParams({
+            tickLower: p.tickLower,
+            tickUpper: p.tickUpper,
+            liquidityDelta: 0,
+            salt: bytes32(0)
+        });
+
+        (int256 callerDelta, ) = poolManager.modifyLiquidity(key, modifyParams, "");
+
+        // Handle takes (positive delta = fees we receive)
+        int128 delta0 = int128(callerDelta >> 128);
+        int128 delta1 = int128(callerDelta);
+
+        uint256 amount0 = 0;
+        uint256 amount1 = 0;
+
+        // Take token0 fees if any
+        if (delta0 > 0) {
+            amount0 = uint256(int256(delta0));
+            poolManager.take(p.token0, p.recipient, amount0);
+        }
+
+        // Take token1 fees if any
         if (delta1 > 0) {
             amount1 = uint256(int256(delta1));
             poolManager.take(p.token1, p.recipient, amount1);

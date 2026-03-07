@@ -28,7 +28,7 @@ contract AddLiquidityV4 is Script {
     address constant POSITION_MANAGER = 0x429ba70129df741B2Ca2a85BC3A2a3328e5c09b4;
     address constant PERMIT2 = 0x000000000022D473030F116dDEE9F6B43aC78BA3;
     address constant WETH = 0x7b79995e5f793A07Bc00c21412e50Ecae098E7f9;
-    address constant TITAN = 0xf825ac88B042e9E31Ce18bAaE18EF8c31Eae7C8f;
+    address constant TITAN = 0xbA6720e72f929318E66AcED4389889640Aee0F6e;
 
     uint24 constant POOL_FEE = 3000;
     int24 constant TICK_SPACING = 60;
@@ -52,8 +52,8 @@ contract AddLiquidityV4 is Script {
         console.log("Currency0:", currency0);
         console.log("Currency1:", currency1);
 
-        uint256 amount0 = 10 ether;
-        uint256 amount1 = 100_000 ether; // 100k TITAN
+        uint256 amount0 = 0.1 ether;      // 0.1 WETH
+        uint256 amount1 = 5000 ether;    // 5000 TITAN
 
         vm.startBroadcast(deployerPrivateKey);
 
@@ -91,7 +91,7 @@ contract AddLiquidityV4 is Script {
             address(0), // hooks
             tickLower,
             tickUpper,
-            uint256(1000000 ether), // liquidity
+            uint256(10000 ether), // liquidity
             uint128(amount0),
             uint128(amount1),
             deployer, // owner

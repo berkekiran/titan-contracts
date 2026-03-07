@@ -11,7 +11,6 @@ pragma solidity ^0.8.20;
 import "forge-std/Script.sol";
 import "../src/TitanToken.sol";
 import "../src/Earn.sol";
-import "../src/Farm.sol";
 import "../src/Governor.sol";
 import "../src/StakedTitan.sol";
 import "../src/Faucet.sol";
@@ -28,24 +27,6 @@ interface IPoolManager {
     function initialize(PoolKey memory key, uint160 sqrtPriceX96) external returns (int24 tick);
 }
 
-interface IPositionManager {
-    struct MintParams {
-        address token0;
-        address token1;
-        uint24 fee;
-        int24 tickLower;
-        int24 tickUpper;
-        uint256 amount0Desired;
-        uint256 amount1Desired;
-        uint256 amount0Min;
-        uint256 amount1Min;
-        address recipient;
-        uint256 deadline;
-    }
-
-    function mint(MintParams calldata params) external payable returns (uint256 tokenId, uint128 liquidity, uint256 amount0, uint256 amount1);
-}
-
 interface IWETH {
     function deposit() external payable;
     function approve(address spender, uint256 amount) external returns (bool);
@@ -55,14 +36,12 @@ contract Deploy is Script {
     // Deployed contract addresses
     TitanToken public titanToken;
     Earn public earn;
-    Farm public farm;
     Governor public governor;
     StakedTitan public sTitan;
     Faucet public faucet;
 
     // Configuration
     uint256 public constant STAKING_REWARD_RATE = 1e15; // 0.001 TITAN per second per token
-    uint256 public constant FARM_TITAN_PER_SECOND = 1e18; // 1 TITAN per second
     uint256 public constant PROPOSAL_THRESHOLD = 1_000 * 1e18; // 1K TITAN to propose (lower for testing)
     uint256 public constant VOTING_DELAY = 1; // 1 block delay before voting starts
     uint256 public constant VOTING_PERIOD = 50400; // ~1 week in blocks (assuming 12s blocks)
@@ -72,7 +51,6 @@ contract Deploy is Script {
     uint256 public constant FAUCET_COOLDOWN = 24 hours;
     uint256 public constant FAUCET_INITIAL_BALANCE = 10_000_000 * 1e18; // 10M TITAN
     uint256 public constant STAKING_REWARDS_ALLOCATION = 20_000_000 * 1e18; // 20M TITAN
-    uint256 public constant FARM_REWARDS_ALLOCATION = 20_000_000 * 1e18; // 20M TITAN
     uint256 public constant STITAN_REWARD_RATE = 1e10; // ~31.5% APY for sTitan
     uint256 public constant STITAN_INITIAL_REWARDS = 5_000_000 * 1e18; // 5M TITAN for sTitan rewards
 
@@ -107,11 +85,7 @@ contract Deploy is Script {
         earn = new Earn(address(titanToken), STAKING_REWARD_RATE, deployer);
         console.log("Earn deployed at:", address(earn));
 
-        // 3. Deploy Farm
-        farm = new Farm(address(titanToken), FARM_TITAN_PER_SECOND, deployer);
-        console.log("Farm deployed at:", address(farm));
-
-        // 4. Deploy Governor
+        // 3. Deploy Governor
         governor = new Governor(
             address(titanToken),
             PROPOSAL_THRESHOLD,
@@ -122,20 +96,17 @@ contract Deploy is Script {
         );
         console.log("Governor deployed at:", address(governor));
 
-        // 5. Deploy StakedTitan (sTitan)
+        // 4. Deploy StakedTitan (sTitan)
         sTitan = new StakedTitan(address(titanToken), STITAN_REWARD_RATE, deployer);
         console.log("StakedTitan (sTitan) deployed at:", address(sTitan));
 
-        // 6. Deploy Faucet
+        // 5. Deploy Faucet
         faucet = new Faucet(address(titanToken), FAUCET_DRIP_AMOUNT, FAUCET_COOLDOWN, deployer);
         console.log("Faucet deployed at:", address(faucet));
 
-        // 7. Fund contracts with TITAN
+        // 6. Fund contracts with TITAN
         titanToken.transfer(address(earn), STAKING_REWARDS_ALLOCATION);
         console.log("Funded Earn with:", STAKING_REWARDS_ALLOCATION / 1e18, "TITAN");
-
-        titanToken.transfer(address(farm), FARM_REWARDS_ALLOCATION);
-        console.log("Funded Farm with:", FARM_REWARDS_ALLOCATION / 1e18, "TITAN");
 
         titanToken.transfer(address(faucet), FAUCET_INITIAL_BALANCE);
         console.log("Funded Faucet with:", FAUCET_INITIAL_BALANCE / 1e18, "TITAN");
@@ -154,7 +125,6 @@ contract Deploy is Script {
         console.log("TitanToken:", address(titanToken));
         console.log("Earn:", address(earn));
         console.log("StakedTitan:", address(sTitan));
-        console.log("Farm:", address(farm));
         console.log("Governor:", address(governor));
         console.log("Faucet:", address(faucet));
         console.log("\nUniswap V4 (Sepolia):");
@@ -181,9 +151,6 @@ contract Deploy is Script {
                 '",\n',
                 '    "staking": "',
                 vm.toString(address(earn)),
-                '",\n',
-                '    "farming": "',
-                vm.toString(address(farm)),
                 '",\n',
                 '    "governance": "',
                 vm.toString(address(governor)),
